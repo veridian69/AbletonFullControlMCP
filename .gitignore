@@ -35,9 +35,12 @@ htmlcov/
 
 # Audio / model artifacts (kept out of git, hold large blobs)
 artifacts/
-data/probes/
-data/renders/
-data/cache/
+# Everything under data/ is generated intermediate output (song_flow
+# bounces, semantic embeddings, demucs stems, key-detection CSVs, etc).
+# Previously only a few sub-dirs were listed here; broadened to the
+# whole directory since none of its contents are ever committed and
+# song_flow output alone runs 30+ MB.
+data/
 *.wav
 *.flac
 *.mp3
@@ -51,3 +54,17 @@ data/cache/
 # Editor / install-script backup files (git is the source of truth for history)
 *.bak
 *.bak.*
+
+# Scratchpad for intermediate work (decompressed .als XML dumps, ad-hoc
+# scripts, synthesized test .als files, PR body drafts, etc). The
+# baseline_decompressed.xml alone is 21k lines; nothing in here ever
+# needs to be committed.
+.tmp/
+
+# User Ableton projects created during testing / experimentation.
+# Kept out of the MCP repo because they hold session data, backup
+# .als files, and Samples/ that aren't part of the codebase.
+jrock-test-1/
+*.als
+*.asd
+"* Project"/
