@@ -1,8 +1,10 @@
-"""Schemas for Ableton Live 11 built-in instruments.
+"""Schemas for Ableton Live built-in instruments (Live 11 baseline + Meld from Live 12).
 
 The class_names match the strings AbletonOSC returns from
 ``/live/track/get/devices/class_name`` (and that the Live LOM exposes via
-``Device.class_name``). UI labels match the Live 11 reference manual.
+``Device.class_name``). UI labels for the Live 11 baseline devices match
+the Live 11 reference manual and were verified against a running
+Device.parameters dump (see docs/LIVE_API_GOTCHAS.md).
 
 A handful of complex instruments (Operator, Wavetable, Sampler, Drum
 Rack, Tension, Collision) have *partial* schemas — the most relevant
@@ -10,6 +12,21 @@ sweep-worthy params are captured, but per-element / matrix params (e.g.
 Operator's full operator A/B/C/D matrix, Wavetable's per-mod-source
 routing) are summarised rather than enumerated. ``notes`` calls this out
 on each schema so the caller doesn't assume completeness.
+
+MELD is a different case: it's a Live 12 device, and this project's
+dev/test rig has only ever run Live 11.3.43, so unlike every other entry
+here it was compiled from Ableton/Cycling'74 public documentation rather
+than a verified live parameter dump. See the MELD schema's own comment
+block and ``notes`` field for exactly what's confirmed vs. summarised.
+
+Not every device that shows up under the Live browser's "instruments"
+category is a native Live-12 addition with its own LOM device class —
+Poli and Emit, for instance, are older bundled Max for Live instruments
+(Poli since Live 9.5, Emit since Live 11) that report a generic
+``MaxDevice`` class_name rather than a dedicated one, so they can't be
+schema-matched by class_name the way Meld/Roar/Hybrid Reverb can. They're
+deliberately not catalogued here; a MaxDevice-aware lookup (keyed on
+``Device.name``, not ``class_name``) would be a separate piece of work.
 """
 
 from __future__ import annotations
@@ -304,6 +321,140 @@ DRIFT = DeviceSchema(
     ],
     notes="Schema partial; envelope 2 and full mod-matrix routing summarised.",
     manual_url="https://www.ableton.com/en/manual/live-instrument-reference/#drift",
+)
+
+
+# --------------------------------------------------------------------------- #
+# Meld (Live 12+)                                                             #
+# --------------------------------------------------------------------------- #
+#
+# UNLIKE every other schema in this file, this one was NOT built by probing
+# a running Device.parameters dump (this project's own dev/test rig has only
+# ever run Live 11.3.43 — see docs/LIVE_API_GOTCHAS.md). It's compiled from
+# Ableton's own public sources instead:
+#
+#   - Ableton's Meld product blog (bi-timbral architecture, Engine A/B,
+#     2 macros per oscillator, per-engine filter/envelope/2xLFO, global
+#     Spread/Drive/Mix): https://www.ableton.com/en/blog/meld-a-look-at-live-12s-new-bi-timbral-synth/
+#   - Sound on Sound's Live 12 review (17 filter algorithms cited in the
+#     UI; corroborates the bi-timbral / per-engine-filter structure):
+#     https://www.soundonsound.com/techniques/ableton-live-meld
+#   - Cycling '74's abl.dsp.meldosc~ reference — this is the actual DSP
+#     object Ableton ships that wraps Meld's oscillator engine, and it
+#     documents the real 24-entry oscillator-type enum (0-23) verbatim:
+#     https://docs.cycling74.com/reference/abl.dsp.meldosc~
+#
+# The oscillator TYPE enum below is high-confidence (it's Ableton's own
+# DSP reference, not a guess). Everything else — exact literal parameter
+# NAME strings as Device.parameters[i].name would report them (e.g.
+# whether it's "Engine A Type" vs "A Osc Type" vs something else) — is
+# NOT verified and must be confirmed against a real Device.parameters
+# dump before any tool relies on exact-name lookups. See notes= below.
+MELD = DeviceSchema(
+    class_name="MeldDevice",
+    display_name="Meld",
+    device_type="instrument",
+    description=(
+        "Bi-timbral MPE-capable synth introduced in Live 12. Two "
+        "independent 'engines' (A/B), each with a macro-oscillator "
+        "(24 selectable types, 2 macro controls whose function depends "
+        "on the selected type), its own multi-mode filter, envelope, "
+        "and two LFOs, plus an extensive cross-engine modulation matrix "
+        "and global mix/drive/spread controls."
+    ),
+    categories=["oscillator", "envelope", "filter", "lfo", "modulation", "mix"],
+    parameters=[
+        # Engine A
+        Parameter("Engine A Type", "enum", 0, 0, 23, None, "oscillator", True,
+                  "Engine A oscillator type. Verified 24-value enum (source: Cycling'74 "
+                  "abl.dsp.meldosc~): 0 Basic Shapes, 1 Bitgrunge, 2 Bubble, 3 Chip, "
+                  "4 Crackle, 5 Dual Basic Shapes, 6 Extratone, 7 Filtered Noise, "
+                  "8 Fold FM, 9 Harmonic FM, 10 Noise Loop, 11 Noisy Shapes, 12 Rain, "
+                  "13 Shepard's Pi, 14 Simple FM, 15 Square 5th, 16 Square Sync, "
+                  "17 Squelch (FM Bass), 18 Sub, 19 Swarm Saw, 20 Swarm Sine, "
+                  "21 Swarm Square, 22 Swarm Triangle, 23 Tarp."),
+        Parameter("Engine A Macro 1", "continuous", 0.5, 0.0, 1.0, None, "oscillator", True,
+                  "Function depends on Engine A Type (e.g. Basic Shapes: wave shape; "
+                  "Harmonic FM: FM amount; Rain: tone). See macro-function table in "
+                  "abl.dsp.meldosc~ reference for the full per-type mapping."),
+        Parameter("Engine A Macro 2", "continuous", 0.5, 0.0, 1.0, None, "oscillator", True,
+                  "Second per-type macro, paired with Macro 1 above."),
+        Parameter("Engine A Pitch", "continuous", 0.0, -48.0, 48.0, "semitones", "pitch", True,
+                  "Engine A transpose."),
+        Parameter("Engine A Filter Type", "enum", 0, 0, 13, None, "filter", True,
+                  "Engine A filter algorithm. Cycling'74's abl.dsp.meldfilter~ DSP "
+                  "object documents 14 modes (0-13); Sound on Sound's UI review counts "
+                  "17 algorithms in the device itself. Enum-to-name mapping NOT verified "
+                  "here — confirm against a real Device.parameters dump before relying "
+                  "on specific index values. Known families from press coverage: LP/HP/"
+                  "BP/Notch, phaser, comb, vowel, plate resonator, membrane resonator."),
+        Parameter("Engine A Filter Freq", "continuous", 8000.0, 20.0, 18000.0, "Hz", "filter", True,
+                  "Engine A filter cutoff."),
+        Parameter("Engine A Filter Res", "continuous", 0.3, 0.0, 1.0, None, "filter", True,
+                  "Engine A filter resonance."),
+        Parameter("Engine A Env Attack", "continuous", 0.001, 0.0, 60.0, "sec", "envelope", True,
+                  "Engine A amplitude envelope attack."),
+        Parameter("Engine A Env Decay", "continuous", 0.5, 0.0, 60.0, "sec", "envelope", True,
+                  "Engine A amplitude envelope decay."),
+        Parameter("Engine A Env Sustain", "continuous", 0.8, 0.0, 1.0, None, "envelope", True,
+                  "Engine A amplitude envelope sustain."),
+        Parameter("Engine A Env Release", "continuous", 0.3, 0.0, 60.0, "sec", "envelope", True,
+                  "Engine A amplitude envelope release."),
+        Parameter("Engine A LFO 1 Rate", "continuous", 1.0, 0.0, 30.0, "Hz", "lfo", False,
+                  "Engine A LFO 1 rate. LFO 1 has its own 'FX' shaping stage ahead of "
+                  "the main mod matrix (per Sound on Sound review) — not modelled here."),
+        # Engine B (mirrors A)
+        Parameter("Engine B Type", "enum", 0, 0, 23, None, "oscillator", True,
+                  "Engine B oscillator type. Same 24-value enum as Engine A Type."),
+        Parameter("Engine B Macro 1", "continuous", 0.5, 0.0, 1.0, None, "oscillator", True,
+                  "Function depends on Engine B Type; same per-type mapping as Engine A Macro 1."),
+        Parameter("Engine B Macro 2", "continuous", 0.5, 0.0, 1.0, None, "oscillator", True,
+                  "Second per-type macro for Engine B."),
+        Parameter("Engine B Pitch", "continuous", 0.0, -48.0, 48.0, "semitones", "pitch", True,
+                  "Engine B transpose."),
+        Parameter("Engine B Filter Type", "enum", 0, 0, 13, None, "filter", True,
+                  "Engine B filter algorithm. Same caveats as Engine A Filter Type."),
+        Parameter("Engine B Filter Freq", "continuous", 8000.0, 20.0, 18000.0, "Hz", "filter", True,
+                  "Engine B filter cutoff."),
+        Parameter("Engine B Filter Res", "continuous", 0.3, 0.0, 1.0, None, "filter", True,
+                  "Engine B filter resonance."),
+        Parameter("Engine B Env Attack", "continuous", 0.001, 0.0, 60.0, "sec", "envelope", True,
+                  "Engine B amplitude envelope attack."),
+        Parameter("Engine B Env Decay", "continuous", 0.5, 0.0, 60.0, "sec", "envelope", True,
+                  "Engine B amplitude envelope decay."),
+        Parameter("Engine B Env Sustain", "continuous", 0.8, 0.0, 1.0, None, "envelope", True,
+                  "Engine B amplitude envelope sustain."),
+        Parameter("Engine B Env Release", "continuous", 0.3, 0.0, 60.0, "sec", "envelope", True,
+                  "Engine B amplitude envelope release."),
+        # Global
+        Parameter("Mix", "continuous", 0.5, 0.0, 1.0, None, "mix", True,
+                  "Balance between Engine A and Engine B."),
+        Parameter("Spread", "continuous", 0.0, -1.0, 1.0, None, "mix", True,
+                  "Stereo/unison spread. Also usable as a modulation source routed "
+                  "through the mod matrix (per Ableton's own Meld blog post)."),
+        Parameter("Drive", "continuous", 0.0, 0.0, 1.0, None, "mix", False,
+                  "Global saturation/drive stage ahead of the output."),
+        Parameter("Volume", "continuous", -6.0, -36.0, 6.0, "dB", "mix", False,
+                  "Master volume."),
+        Parameter("Voices", "quantized", 8, 1, 16, None, "global", False,
+                  "Maximum simultaneous voices (polyphonic)."),
+    ],
+    notes=(
+        "SCHEMA CONFIDENCE IS LOWER THAN OTHER ENTRIES IN THIS FILE. Built from "
+        "Ableton/Cycling'74 public documentation, NOT verified against a running "
+        "Device.parameters dump (this project's dev/test rig has only run Live "
+        "11.3.43 to date). The 'Engine A/B Type' 24-value oscillator enum is "
+        "high-confidence — sourced directly from Cycling'74's abl.dsp.meldosc~ "
+        "DSP reference, which documents Meld's actual oscillator engine. "
+        "Everything else (exact literal parameter name strings, filter-type "
+        "enum-to-name mapping, MIDI/MPE modulation params, the full modulation "
+        "matrix, scale-aware mode, unison mode) is summarised or omitted. "
+        "BEFORE relying on exact-name parameter lookups against this schema: "
+        "load Meld on a track in real Live 12+ and diff this parameter list "
+        "against `/live/device/get/parameters/name` (AbletonOSC) or "
+        "Device.parameters — do not trust the name strings above blind."
+    ),
+    manual_url="https://www.ableton.com/en/manual/live-instrument-reference/#meld",
 )
 
 
@@ -683,6 +834,7 @@ INSTRUMENT_SCHEMAS: list = [
     WAVETABLE,
     ANALOG,
     DRIFT,
+    MELD,
     SIMPLER,
     SAMPLER,
     DRUM_RACK,
