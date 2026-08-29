@@ -51,6 +51,7 @@ class BounceJob:
     job_id: str
     operation: str
     state: str = "running"
+    exclusive: bool = True  # needs Live's transport to itself
     seq: int = field(default_factory=lambda: next(_SEQ))
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
@@ -67,6 +68,7 @@ class BounceJob:
             "job_id": self.job_id,
             "operation": self.operation,
             "state": self.state,
+            "exclusive": self.exclusive,
             "progress": round(self.progress, 4),
             "message": self.message,
             "elapsed_sec": round(elapsed, 1),
@@ -84,8 +86,21 @@ def reset_jobs() -> None:
 
 
 def active_job() -> BounceJob | None:
+    """Any running job (newest-first is not guaranteed; used for reporting)."""
     for job in _JOBS.values():
         if job.state == "running":
+            return job
+    return None
+
+
+def active_exclusive_job() -> BounceJob | None:
+    """The running job that holds Live's transport, if any.
+
+    Only exclusive jobs conflict. Pure file-math jobs (mixdowns, encodes)
+    run concurrently with a bounce and with each other.
+    """
+    for job in _JOBS.values():
+        if job.state == "running" and job.exclusive:
             return job
     return None
 
@@ -97,22 +112,30 @@ def _prune_finished() -> None:
         del _JOBS[job.job_id]
 
 
-def start_job(operation: str, runner: JobRunner) -> BounceJob:
+def start_job(
+    operation: str, runner: JobRunner, *, exclusive: bool = True
+) -> BounceJob:
     """Launch ``runner`` as a background task and track it.
 
-    Raises :class:`BounceJobError` when another job is still running —
-    Live's transport is exclusive, and two overlapping bounces would
-    corrupt each other's audio.
+    ``exclusive=True`` (default) means the job drives Live's transport:
+    only one such job runs at a time, and starting another raises
+    :class:`BounceJobError` (two overlapping bounces would corrupt each
+    other's audio). Pass ``exclusive=False`` for pure file-math jobs
+    (stem mixdowns, mp3 encodes) — they touch no Live state, so they run
+    concurrently with a bounce and with each other.
     """
-    active = active_job()
-    if active is not None:
-        raise BounceJobError(
-            f"bounce job {active.job_id} ({active.operation}) is still running "
-            f"— Live can only bounce one thing at a time; poll "
-            f"bounce_job_status({active.job_id!r}) and retry when it finishes"
-        )
+    if exclusive:
+        active = active_exclusive_job()
+        if active is not None:
+            raise BounceJobError(
+                f"bounce job {active.job_id} ({active.operation}) is still running "
+                f"— Live can only bounce one thing at a time; poll "
+                f"bounce_job_status({active.job_id!r}) and retry when it finishes"
+            )
 
-    job = BounceJob(job_id=uuid.uuid4().hex[:12], operation=operation)
+    job = BounceJob(
+        job_id=uuid.uuid4().hex[:12], operation=operation, exclusive=exclusive
+    )
 
     async def _on_progress(progress: float, message: str) -> None:
         job.progress = float(progress)
@@ -131,10 +154,20 @@ def start_job(operation: str, runner: JobRunner) -> BounceJob:
                 job.progress = 1.0
                 job.message = "complete"
         except asyncio.CancelledError:
-            # The engine's cancellation contract already restored Live's
-            # state (transport stopped, temp tracks deleted) on the way up.
             job.state = "cancelled"
-            job.message = "cancelled; Live state restored"
+            if exclusive:
+                # The engine's cancellation contract already restored Live's
+                # state (transport stopped, temp tracks deleted) on the way up.
+                job.message = "cancelled; Live state restored"
+            else:
+                # Non-exclusive jobs do their work in a worker thread, and
+                # a thread cannot be interrupted: cancelling stops us
+                # WAITING on it, not the work itself. Say so rather than
+                # implying everything stopped.
+                job.message = (
+                    "cancelled (the worker thread may still be finishing "
+                    "the file it was on; output already written stays)"
+                )
         except Exception as exc:  # noqa: BLE001 — job boundary
             job.state = "error"
             job.error = f"{type(exc).__name__}: {exc}"
