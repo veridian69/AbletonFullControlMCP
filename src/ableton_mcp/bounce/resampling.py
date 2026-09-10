@@ -47,6 +47,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -794,6 +795,7 @@ async def bounce_tracks_via_resampling(
     include_master: bool = False,
     cleanup_temp_tracks: bool = True,
     clip_finalize_timeout_sec: float = DEFAULT_CLIP_FINALIZE_TIMEOUT_SEC,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Capture each source track to its own wav by routing into a temp audio track.
 
@@ -852,9 +854,16 @@ async def bounce_tracks_via_resampling(
     sources_for_copy: list[tuple[int, str, Path, str | None]] = []
     master_src: str | None = None
     try:
-        await _record_arrangement(
-            duration_sec, settle_sec=settle_sec, start_beat=start_beat,
-        )
+        if progress_callback is None:
+            await _record_arrangement(
+                duration_sec, settle_sec=settle_sec, start_beat=start_beat,
+            )
+        else:
+            await _record_arrangement_with_progress(
+                duration_sec, settle_sec=settle_sec, start_beat=start_beat,
+                progress_callback=progress_callback, progress_start=0.08, progress_end=0.85,
+            )
+        await _report(progress_callback, 0.85, "recording complete; harvesting clips")
         # Harvest file paths BEFORE deleting tracks (file_path is on the clip).
         for temp_idx, source_idx, source_name, r_ok, a_ok in temp_indices:
             src = await _wait_for_clip_file_path(
@@ -920,6 +929,7 @@ async def bounce_tracks_via_resampling(
             master_result["routing_confirmed"] = master_routing_ok
             master_result["arm_confirmed"] = master_arm_ok
 
+    await _report(progress_callback, 1.0, "complete")
     return {
         "what": "stems_via_resampling",
         "duration_sec": duration_sec,
@@ -991,11 +1001,11 @@ async def bounce_enabled_via_resampling(
 # Everything above operates on the whole song / whole arrangement. The
 # conversational mix-shaping use case ("the lead doesn't cut through during
 # the solo") needs to bounce a SPECIFIC beat range. These helpers wrap the
-# lower-level bounce functions with a beat→seconds conversion that reads
-# tempo from Live, then start the playhead at the region's start.
+# lower-level bounce functions with an explicit step map, or a conversion
+# assuming Live's current tempo, then start the playhead at the region's start.
 #
 # Caveat: the bounce records real-time, so a 32-bar region at 120 BPM still
-# takes ~32 s wall-clock. Faster than bouncing the whole song, but not
+# takes ~64 s wall-clock. Faster than bouncing the whole song, but not
 # instant. For ultra-fast iteration use the freeze path
 # (bounce_tracks_via_freeze) — that produces a full-track wav offline, and
 # region slicing is downstream librosa.
@@ -1017,6 +1027,124 @@ def _beats_to_seconds(beats: float, tempo_bpm: float) -> float:
     return float(beats) * 60.0 / float(tempo_bpm)
 
 
+def _finite_region_number(value: Any, label: str) -> Fraction:
+    try:
+        valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError(f"{label} must be a finite number")
+    return Fraction(str(value))
+
+
+def _step_region_seconds(start_beats: float, end_beats: float, tempo_map: list[dict]) -> float:
+    start, end = Fraction(str(start_beats)), Fraction(str(end_beats))
+    seconds = Fraction(0)
+    for index, segment in enumerate(tempo_map):
+        left = max(start, Fraction(str(segment["start_beats"])))
+        next_beat = Fraction(str(tempo_map[index + 1]["start_beats"])) if index + 1 < len(tempo_map) else end
+        right = min(end, next_beat)
+        if right > left:
+            seconds += (right - left) * 60 / Fraction(str(segment["bpm"]))
+    try:
+        result = float(seconds)
+    except OverflowError as exc:
+        raise ValueError("region duration exceeds supported range") from exc
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError("region duration must be finite and positive")
+    return result
+
+
+def validate_region_bounce_inputs(
+    output_dir: str | os.PathLike,
+    start_beats: float,
+    end_beats: float,
+    *,
+    tempo_map: list[dict[str, Any]] | None = None,
+    track_indices: Sequence[int] | None = None,
+    settle_sec: float = 0.4,
+    warmup_sec: float = 0.0,
+    pre_cleanup: bool = True,
+    cleanup_temp_tracks: bool = True,
+    clip_finalize_timeout_sec: float = DEFAULT_CLIP_FINALIZE_TIMEOUT_SEC,
+    progress_callback: ProgressCallback | None = None,
+) -> list[dict[str, Any]] | None:
+    """Validate before any directory creation or Live mutation; snapshot the map.
+
+    A supplied map starts at arrangement beat zero and its final step extends
+    indefinitely. It describes the caller's assumption, not observed automation.
+    """
+    start = _finite_region_number(start_beats, "start_beats")
+    end = _finite_region_number(end_beats, "end_beats")
+    if start < 0:
+        raise ValueError("start_beats must be >= 0")
+    if end <= start:
+        raise ValueError("end_beats must be > start_beats")
+    for label, value in (("settle_sec", settle_sec), ("warmup_sec", warmup_sec),
+                         ("clip_finalize_timeout_sec", clip_finalize_timeout_sec)):
+        number = _finite_region_number(value, label)
+        if number < 0 or (label == "clip_finalize_timeout_sec" and number == 0):
+            raise ValueError(f"{label} is outside its supported range")
+    if type(pre_cleanup) is not bool or type(cleanup_temp_tracks) is not bool:
+        raise ValueError("cleanup options must be booleans")
+    if progress_callback is not None and not callable(progress_callback):
+        raise ValueError("progress_callback must be callable")
+    if track_indices is not None:
+        if (not isinstance(track_indices, Sequence) or isinstance(track_indices, (str, bytes))
+                or any(type(i) is not int or i < 0 for i in track_indices)
+                or len(set(track_indices)) != len(track_indices)):
+            raise ValueError("track_indices must contain unique nonnegative integers")
+    try:
+        path = os.fspath(output_dir)
+    except TypeError as exc:
+        raise ValueError("output_dir must be a non-empty path") from exc
+    if not isinstance(path, str) or not path.strip() or "\x00" in path:
+        raise ValueError("output_dir must be a non-empty path without NUL characters")
+    ancestor = Path(path).resolve()
+    while not ancestor.exists() and ancestor != ancestor.parent:
+        ancestor = ancestor.parent
+    if not ancestor.is_dir():
+        raise ValueError("output_dir or its parent is an existing file")
+    if tempo_map is None:
+        return None
+    if not isinstance(tempo_map, list) or not tempo_map:
+        raise ValueError("tempo_map must be a non-empty list of {start_beats, bpm} steps")
+    clean = []
+    previous = None
+    for segment in tempo_map:
+        if not isinstance(segment, dict) or set(segment) != {"start_beats", "bpm"}:
+            raise ValueError("tempo_map entries must contain exactly start_beats and bpm")
+        beat = _finite_region_number(segment["start_beats"], "tempo_map.start_beats")
+        bpm = _finite_region_number(segment["bpm"], "tempo_map.bpm")
+        if (previous is None and beat != 0) or (previous is not None and beat <= previous):
+            raise ValueError("tempo_map must start at beat 0 and increase strictly")
+        if not 20 <= bpm <= 999:
+            raise ValueError("tempo_map.bpm must be between 20 and 999 inclusive")
+        clean.append(dict(segment))
+        previous = beat
+    _step_region_seconds(start_beats, end_beats, clean)
+    return clean
+
+
+async def _region_timing(start_beats: float, end_beats: float, tempo_map: list[dict] | None) -> dict:
+    tempo = None
+    if tempo_map is None:
+        tempo = await _read_tempo()
+        if _finite_region_number(tempo, "current tempo") <= 0:
+            raise ValueError("current tempo must be positive")
+        duration = _beats_to_seconds(end_beats - start_beats, tempo)
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("region duration must be finite and positive")
+    else:
+        duration = _step_region_seconds(start_beats, end_beats, tempo_map)
+    return {
+        "region_start_beats": float(start_beats), "region_end_beats": float(end_beats),
+        "region_seconds": duration, "tempo_at_bounce": tempo,
+        "time_basis": "assumed_current_tempo" if tempo_map is None else "explicit_step_tempo_map",
+        "tempo_map": tempo_map, "tempo_automation_verified": False,
+    }
+
+
 async def bounce_region_via_resampling(
     output_dir: str | os.PathLike,
     start_beats: float,
@@ -1029,11 +1157,14 @@ async def bounce_region_via_resampling(
     cleanup_temp_tracks: bool = True,
     clip_finalize_timeout_sec: float = DEFAULT_CLIP_FINALIZE_TIMEOUT_SEC,
     progress_callback: ProgressCallback | None = None,
+    tempo_map: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bounce a specific beat range of the arrangement.
 
     ``[start_beats, end_beats]`` is the song-time region to capture.
-    Tempo is read from Live to convert beats → record duration in seconds.
+    An explicit ``tempo_map`` integrates beat intervals / BPM. Without a map,
+    duration assumes Live's current tempo remains constant throughout the region.
+    Neither path infers, verifies or changes tempo automation.
 
     When ``track_indices`` is None (default), bounces the **master mix**
     for the region to ``<output_dir>/master_<start>-<end>.wav``. When a
@@ -1046,6 +1177,9 @@ async def bounce_region_via_resampling(
         start_beats: region start in beats (0-based).
         end_beats: region end in beats (must be > start_beats).
         track_indices: which tracks to capture. None = master mix.
+        tempo_map: optional {start_beats, bpm} steps, starting at arrangement
+            beat 0, strictly increasing, 20-999 BPM; final step extends forever.
+            Supplying it asserts that the caller checked the arrangement's tempo.
         warmup_sec / settle_sec / pre_cleanup / cleanup_temp_tracks /
             clip_finalize_timeout_sec / progress_callback — see the
             lower-level bounce functions.
@@ -1058,24 +1192,36 @@ async def bounce_region_via_resampling(
     Raises:
         ValueError on invalid range (end <= start, negative start).
     """
-    if start_beats < 0:
-        raise ValueError(f"start_beats must be >= 0 (got {start_beats})")
-    if end_beats <= start_beats:
-        raise ValueError(
-            f"end_beats must be > start_beats (got start={start_beats}, end={end_beats})"
-        )
+    tempo_map = validate_region_bounce_inputs(
+        output_dir, start_beats, end_beats, tempo_map=tempo_map, track_indices=track_indices,
+        settle_sec=settle_sec, warmup_sec=warmup_sec, pre_cleanup=pre_cleanup,
+        cleanup_temp_tracks=cleanup_temp_tracks, clip_finalize_timeout_sec=clip_finalize_timeout_sec,
+        progress_callback=progress_callback,
+    )
+    track_indices = list(track_indices) if track_indices is not None else None
+    region_meta = await _region_timing(start_beats, end_beats, tempo_map)
+    return await _capture_region(
+        output_dir, start_beats, end_beats, region_meta, track_indices=track_indices,
+        settle_sec=settle_sec, warmup_sec=warmup_sec, pre_cleanup=pre_cleanup,
+        cleanup_temp_tracks=cleanup_temp_tracks, clip_finalize_timeout_sec=clip_finalize_timeout_sec,
+        progress_callback=progress_callback,
+    )
 
-    tempo = await _read_tempo()
-    duration_sec = _beats_to_seconds(end_beats - start_beats, tempo)
+
+async def _capture_region(
+    output_dir, start_beats, end_beats, region_meta, *, track_indices,
+    settle_sec, warmup_sec, pre_cleanup, cleanup_temp_tracks,
+    clip_finalize_timeout_sec, progress_callback,
+):
+    """Dispatch already-validated region timing to the existing capture engines."""
+    duration_sec = region_meta["region_seconds"]
+    if track_indices:
+        count = await _track_count()
+        for index in track_indices:
+            if index >= count:
+                raise ValueError(f"track_index {index} out of range (have {count})")
     out_root = Path(output_dir).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
-
-    region_meta = {
-        "region_start_beats": float(start_beats),
-        "region_end_beats": float(end_beats),
-        "region_seconds": duration_sec,
-        "tempo_at_bounce": tempo,
-    }
 
     if track_indices is None:
         # Master bounce.
@@ -1101,6 +1247,7 @@ async def bounce_region_via_resampling(
         pre_cleanup=pre_cleanup,
         cleanup_temp_tracks=cleanup_temp_tracks,
         clip_finalize_timeout_sec=clip_finalize_timeout_sec,
+        progress_callback=progress_callback,
     )
     return {**result, **region_meta, "kind": "region_stems"}
 
@@ -1115,6 +1262,8 @@ async def bounce_region_all_active_via_resampling(
     pre_cleanup: bool = True,
     cleanup_temp_tracks: bool = True,
     clip_finalize_timeout_sec: float = DEFAULT_CLIP_FINALIZE_TIMEOUT_SEC,
+    progress_callback: ProgressCallback | None = None,
+    tempo_map: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bounce every un-muted, audio-producing track for a beat region.
 
@@ -1128,6 +1277,13 @@ async def bounce_region_all_active_via_resampling(
     muted tracks, temp-bounce leftover tracks, tracks without audio
     output (group folders, MIDI-without-instrument).
     """
+    tempo_map = validate_region_bounce_inputs(
+        output_dir, start_beats, end_beats, tempo_map=tempo_map,
+        settle_sec=settle_sec, warmup_sec=warmup_sec, pre_cleanup=pre_cleanup,
+        cleanup_temp_tracks=cleanup_temp_tracks, clip_finalize_timeout_sec=clip_finalize_timeout_sec,
+        progress_callback=progress_callback,
+    )
+    region_meta = await _region_timing(start_beats, end_beats, tempo_map)
     osc = await get_client()
     # Run pre-cleanup FIRST so any orphan temp tracks are gone before we
     # enumerate. Doing this in the underlying bounce_region call would
@@ -1155,11 +1311,12 @@ async def bounce_region_all_active_via_resampling(
             continue
         keep.append(i)
 
-    return await bounce_region_via_resampling(
-        output_dir, start_beats, end_beats,
+    return await _capture_region(
+        output_dir, start_beats, end_beats, region_meta,
         track_indices=keep,
         settle_sec=settle_sec, warmup_sec=warmup_sec,
         pre_cleanup=False,  # already done above
         cleanup_temp_tracks=cleanup_temp_tracks,
         clip_finalize_timeout_sec=clip_finalize_timeout_sec,
+        progress_callback=progress_callback,
     )

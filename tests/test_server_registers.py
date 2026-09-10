@@ -63,6 +63,9 @@ async def test_server_builds_and_registers_tools() -> None:
         "bounce_job_status", "bounce_job_cancel", "bounce_job_list",
         # Session-clip transpose (arrangement-safe path)
         "song_transpose_session",
+        # Film cue interchange (offline planning and preview-first locator import).
+        "film_cues_plan", "film_cues_import",
+        "film_cues_export_set", "film_stems_prepare", "film_stems_audit",
     }
     missing = expected - names
     assert not missing, f"missing tools: {sorted(missing)}"

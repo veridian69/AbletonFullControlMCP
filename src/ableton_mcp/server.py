@@ -20,6 +20,9 @@ from .tools import (
     cue_points,
     device_schemas,
     devices,
+    film_cues,
+    film_cue_set,
+    film_delivery,
     high_level,
     inventory,
     knowledge,
@@ -123,6 +126,9 @@ def build_server() -> FastMCP:
     # Lyric-aligned section detection — chart-vs-transcript correlation,
     # sections.json sidecar, arrangement locators.
     sections.register(mcp)
+    film_cues.register(mcp)
+    film_cue_set.register(mcp)
+    film_delivery.register(mcp)
 
     return mcp
 

@@ -39,6 +39,7 @@ from ..bounce import (
 )
 from ..bounce import jobs as _jobs
 from ..bounce.mp3 import FFmpegMissing
+from ..bounce.resampling import validate_region_bounce_inputs
 
 _ProgressCB = Callable[[float, str], Awaitable[None]]
 
@@ -78,6 +79,13 @@ async def _note(progress_cb: _ProgressCB | None, progress: float, message: str) 
         await progress_cb(progress, message)
     except Exception:  # pragma: no cover — a broken notifier must not kill a bounce
         pass
+
+
+def _validate_region_export_options(encode_mp3: bool, bitrate_kbps: int, background: bool) -> None:
+    if type(encode_mp3) is not bool or type(background) is not bool:
+        raise ValueError("encode_mp3 and background must be booleans")
+    if type(bitrate_kbps) is not int or not 8 <= bitrate_kbps <= 320:
+        raise ValueError("bitrate_kbps must be an integer between 8 and 320")
 
 
 def register(mcp: FastMCP) -> None:
@@ -367,6 +375,7 @@ def register(mcp: FastMCP) -> None:
         warmup_sec: float = 0.0,
         background: bool = False,
         ctx: Context | None = None,
+        tempo_map: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Bounce a specific beat range of the arrangement.
 
@@ -383,8 +392,8 @@ def register(mcp: FastMCP) -> None:
           one playback pass.
 
         Wall-clock cost is real-time: the region's duration in seconds
-        (computed from beats + Live's current tempo). 32 bars at 120 BPM
-        is ~64 s of wall clock. For ultra-fast iteration on a saved
+        (integrated from tempo_map, or assuming Live's current tempo).
+        32 bars at 120 BPM is ~64 s of wall clock. For ultra-fast iteration on a saved
         project use ``bounce_tracks(mode="freeze")`` for whole-track
         stems and slice them post-hoc.
 
@@ -393,17 +402,33 @@ def register(mcp: FastMCP) -> None:
             start_beats: region start in beats (>= 0).
             end_beats: region end in beats (> start_beats).
             track_indices: tracks to capture, or None for master.
+            tempo_map: optional {start_beats, bpm} steps at arrangement beats,
+                starting at 0, strictly increasing, 20-999 BPM. The final tempo
+                extends indefinitely. Supplying a map means the caller checked
+                that Live follows it; no automation is inferred or changed and
+                no extra confirmation flag is required. Without a map, results
+                label timing as assumed_current_tempo.
             encode_mp3 / bitrate_kbps / warmup_sec — see ``bounce_song``.
             background: return ``{status: "started", job_id}`` immediately
                 and render in a server-side job with per-second progress;
                 poll ``bounce_job_status(job_id)``.
         """
+        try:
+            _validate_region_export_options(encode_mp3, bitrate_kbps, background)
+            tempo_map = validate_region_bounce_inputs(
+                output_dir, start_beats, end_beats, tempo_map=tempo_map,
+                track_indices=track_indices, warmup_sec=warmup_sec,
+            )
+            track_indices = list(track_indices) if track_indices is not None else None
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+
         async def _run(progress_cb: _ProgressCB | None) -> dict[str, Any]:
             try:
                 r = await bounce_region_via_resampling(
                     output_dir, float(start_beats), float(end_beats),
                     track_indices=track_indices, warmup_sec=warmup_sec,
-                    progress_callback=progress_cb,
+                    progress_callback=progress_cb, tempo_map=tempo_map,
                 )
             except ValueError as e:
                 return {"status": "error", "error": str(e)}
@@ -455,6 +480,8 @@ def register(mcp: FastMCP) -> None:
         bitrate_kbps: int = 192,
         warmup_sec: float = 0.0,
         background: bool = False,
+        tempo_map: list[dict[str, Any]] | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Bounce every un-muted, audio-producing track for a beat region.
 
@@ -470,16 +497,32 @@ def register(mcp: FastMCP) -> None:
         instrument).
 
         ``background=True`` returns ``{status: "started", job_id}``
-        immediately and renders in a server-side job (coarse progress
-        only for this operation); poll ``bounce_job_status(job_id)``.
+        immediately and renders in a server-side job with recording progress;
+        poll ``bounce_job_status(job_id)``. Optional ``tempo_map`` uses
+        {start_beats, bpm} steps starting at arrangement beat 0, increasing
+        strictly, 20-999 BPM; the final step extends indefinitely. The caller
+        must check that Live follows the map; it never reads or writes tempo
+        automation. No map retains assumed_current_tempo timing.
         """
+        try:
+            _validate_region_export_options(encode_mp3, bitrate_kbps, background)
+            tempo_map = validate_region_bounce_inputs(
+                output_dir, start_beats, end_beats, tempo_map=tempo_map, warmup_sec=warmup_sec,
+            )
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+
         async def _run(progress_cb: _ProgressCB | None) -> dict[str, Any]:
-            await _note(progress_cb, 0.0, "bounce_region_all_active running "
-                                          "(coarse progress only)")
+            await _note(progress_cb, 0.0, "bounce_region_all_active running")
+
+            async def capture_progress(progress: float, message: str) -> None:
+                await _note(progress_cb, progress * 0.85, message)
+
             try:
                 r = await bounce_region_all_active_via_resampling(
                     output_dir, float(start_beats), float(end_beats),
-                    warmup_sec=warmup_sec,
+                    warmup_sec=warmup_sec, tempo_map=tempo_map,
+                    progress_callback=capture_progress if progress_cb is not None else None,
                 )
             except ValueError as e:
                 return {"status": "error", "error": str(e)}
@@ -502,11 +545,17 @@ def register(mcp: FastMCP) -> None:
                     except Exception as e:
                         r["mp3s"].append({"error": f"{type(e).__name__}: {e}", "skipped_for": wav})
             r.setdefault("status", "ok")
+            await _note(progress_cb, 1.0, "complete")
             return r
 
         if background:
             return _start_background("bounce_region_all_active", _run)
-        return await _run(None)
+
+        async def _on_progress(progress: float, message: str) -> None:
+            if ctx is not None:
+                await ctx.report_progress(progress, 1.0, message=message)
+
+        return await _run(_on_progress if ctx is not None else None)
 
     # ============================================================
     # Offline post-processing — operate on wav files already on disk.

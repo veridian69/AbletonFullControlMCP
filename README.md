@@ -235,6 +235,17 @@ See [ROADMAP.md](ROADMAP.md) for the six phases and current state.
 
 ## Talking to it like a musician
 
+For scoring to picture, `film_cues_plan` converts Resolve `film-cues/v1` markers
+to beats using an explicit constant tempo or step map. `film_cues_import`
+provides a read-only comparison against existing locators. Native film locator
+writes remain disabled: Live's toggle deleted an adjacent locator despite checks.
+Use [`film_cues_export_set`](docs/FILM_CUE_SET.md) for a new sibling ALS copy with
+locators, without changing the open set. Region bounces now accept an
+[explicit step tempo map](docs/BOUNCE_TEMPO_MAP.md). For existing WAV captures,
+[`film_stems_prepare` and `film_stems_audit`](docs/FILM_STEMS.md) provide exact
+common sample boundaries and explicit tails, with caller-verified capture origins.
+See [Film cue interchange](docs/FILM_CUES.md) for timing and deployment details.
+
 Examples that "just work" once everything is installed and wired:
 
 - *"What's the state of my set?"* → `live_get_state` + `track_list`.

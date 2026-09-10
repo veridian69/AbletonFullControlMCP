@@ -47,7 +47,9 @@ def register(mcp: FastMCP) -> None:
             "path": str(p.resolve()),
             "duration_sec": duration,
             "sample_rate": int(sample_rate),
-            "tempo_bpm": float(tempo),
+            # librosa may return a one-element array, including for mono input.
+            # NumPy 2 rejects float(array); item() also accepts scalar tempo=0.
+            "tempo_bpm": float(np.asarray(tempo).item()),
             "estimated_key_pitch_class": pitch_classes[key_pc],
             "spectral": {
                 "centroid_hz": centroid,
