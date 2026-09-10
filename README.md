@@ -246,6 +246,12 @@ locators, without changing the open set. Region bounces now accept an
 common sample boundaries and explicit tails, with caller-verified capture origins.
 See [Film cue interchange](docs/FILM_CUES.md) for timing and deployment details.
 
+[`film_tempo_read`](docs/FILM_TEMPO.md) extracts constant/proven-step tempo maps
+from supported saved ALS files, with a source hash and explicit refusal of ramps.
+[Capture calibration](docs/FILM_CALIBRATION.md) generates a probe, measures
+independent recordings and revalidates the profile against current declared
+settings. These tools never replace an unsaved set or silently apply compensation.
+
 Examples that "just work" once everything is installed and wired:
 
 - *"What's the state of my set?"* → `live_get_state` + `track_list`.

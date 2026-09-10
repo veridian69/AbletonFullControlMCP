@@ -23,6 +23,8 @@ from .tools import (
     film_cues,
     film_cue_set,
     film_delivery,
+    film_tempo,
+    film_calibration,
     high_level,
     inventory,
     knowledge,
@@ -129,6 +131,8 @@ def build_server() -> FastMCP:
     film_cues.register(mcp)
     film_cue_set.register(mcp)
     film_delivery.register(mcp)
+    film_tempo.register(mcp)
+    film_calibration.register(mcp)
 
     return mcp
 

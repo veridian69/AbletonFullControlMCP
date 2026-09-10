@@ -66,6 +66,8 @@ async def test_server_builds_and_registers_tools() -> None:
         # Film cue interchange (offline planning and preview-first locator import).
         "film_cues_plan", "film_cues_import",
         "film_cues_export_set", "film_stems_prepare", "film_stems_audit",
+        "film_tempo_read", "generate_calibration_probe", "measure_capture_calibration",
+        "validate_capture_calibration",
     }
     missing = expected - names
     assert not missing, f"missing tools: {sorted(missing)}"
