@@ -350,7 +350,11 @@ def register(mcp: FastMCP) -> None:
         start_time: float | None = None,
         time_span: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Return MIDI notes in a clip. Optional filters constrain pitch and time ranges."""
+        """Return MIDI notes from a Session slot (clip_index is the slot index).
+
+        For Arrangement use arrangement_get_notes. Optional filters constrain
+        pitch and time ranges.
+        """
         client = await get_client()
         args: list[Any] = [int(track_index), int(clip_index)]
         if start_pitch is not None:
@@ -377,7 +381,10 @@ def register(mcp: FastMCP) -> None:
         clip_index: int,
         notes: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Add MIDI notes to a clip.
+        """Add MIDI notes to a Session slot (clip_index is the slot index).
+
+        For Arrangement use arrangement_set_notes. The OSC send count below
+        reports requested notes, not verified readback from Live.
 
         Each note: {pitch:int, start:float (beats), duration:float (beats),
         velocity:int 1..127, mute:bool (optional)}.

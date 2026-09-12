@@ -21,6 +21,7 @@ Offline (work on any wavs already on disk):
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -69,6 +70,29 @@ def _start_background(
         "hint": "poll bounce_job_status(job_id) — the result dict appears there "
                 "when state becomes 'done'",
     }
+
+
+async def _run_foreground(
+    operation: str, runner: "_jobs.JobRunner", progress_cb: _ProgressCB | None = None,
+) -> dict[str, Any]:
+    """Hold the same transport reservation as background jobs while awaiting capture."""
+    async def tracked(progress):
+        async def notify(value, message):
+            await progress(value, message)
+            if progress_cb is not None:
+                await progress_cb(value, message)
+        return await runner(notify)
+
+    started = _start_background(operation, tracked)
+    if started["status"] != "started":
+        return started
+    job = _jobs.get_job(started["job_id"])
+    await job.task
+    if job.state == "cancelled":
+        raise asyncio.CancelledError()
+    if job.result is not None:
+        return job.result
+    return {"status": "error", "error": job.error or "Capture returned no result"}
 
 
 async def _note(progress_cb: _ProgressCB | None, progress: float, message: str) -> None:
@@ -168,7 +192,7 @@ def register(mcp: FastMCP) -> None:
             if ctx is not None:
                 await ctx.report_progress(progress, 1.0, message=message)
 
-        return await _run(_on_progress if ctx is not None else None)
+        return await _run_foreground("bounce_song", _run, _on_progress if ctx is not None else None)
 
     @mcp.tool()
     async def bounce_tracks(
@@ -270,7 +294,7 @@ def register(mcp: FastMCP) -> None:
 
         if background:
             return _start_background("bounce_tracks", _run)
-        return await _run(None)
+        return await _run_foreground("bounce_tracks", _run)
 
     @mcp.tool()
     async def bounce_enabled(
@@ -362,7 +386,7 @@ def register(mcp: FastMCP) -> None:
 
         if background:
             return _start_background("bounce_enabled", _run)
-        return await _run(None)
+        return await _run_foreground("bounce_enabled", _run)
 
     @mcp.tool()
     async def bounce_region(
@@ -469,7 +493,7 @@ def register(mcp: FastMCP) -> None:
             if ctx is not None:
                 await ctx.report_progress(progress, 1.0, message=message)
 
-        return await _run(_on_progress if ctx is not None else None)
+        return await _run_foreground("bounce_region", _run, _on_progress if ctx is not None else None)
 
     @mcp.tool()
     async def bounce_region_all_active(
@@ -555,7 +579,8 @@ def register(mcp: FastMCP) -> None:
             if ctx is not None:
                 await ctx.report_progress(progress, 1.0, message=message)
 
-        return await _run(_on_progress if ctx is not None else None)
+        return await _run_foreground("bounce_region_all_active", _run,
+                                     _on_progress if ctx is not None else None)
 
     # ============================================================
     # Offline post-processing — operate on wav files already on disk.

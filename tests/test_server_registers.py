@@ -37,6 +37,10 @@ async def test_server_builds_and_registers_tools() -> None:
         "view_get_selection", "view_select_track", "view_select_clip", "view_select_device",
         # Arrangement
         "arrangement_clips_list", "arrangement_summary",
+        "arrangement_get_notes", "arrangement_set_notes",
+        "automation_capabilities", "automation_write_curve", "automation_read_values",
+        "windows_live_ui_status", "windows_save_set_as",
+        "windows_new_set", "windows_open_native_export",
         # Routing
         "routing_available_inputs", "routing_get", "routing_set_output",
         # Devices

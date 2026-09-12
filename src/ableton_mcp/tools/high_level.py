@@ -114,16 +114,18 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def op_save_set(path: str | None = None) -> dict[str, Any]:
-        """Save the current Live Set (Cmd-S).
+        """Request saving the current Live Set through the bridge.
 
-        `path` is accepted for forward compatibility but Live's API does NOT
-        support Save-As without the UI dialog, so it's currently ignored with
-        a `save_as_supported: False` flag in the response.
+        A supplied path requires the explicit Windows GUI Save As helper;
+        it is never ignored and never triggers saving to the old path.
         """
-        result = await _call("project.save")
         if path is not None:
-            result["save_as_path_ignored"] = path
-        return result
+            return {
+                "ok": False, "status": "user_action_required",
+                "save_as_supported": False, "path": path,
+                "hint": "Use windows_live_ui_status then windows_save_set_as(process_id, path).",
+            }
+        return await _call("project.save")
 
     # ---- Genuinely-not-supported ops ----
     # These remain stubs because Live's Python LOM has no hook for them.
@@ -179,9 +181,9 @@ def register(mcp: FastMCP) -> None:
         Workarounds:
 
         1. **Manual** — File → New Live Set (Ctrl/Cmd-N).
-        2. **AppleScript / pywinauto** — drive the menu from outside Live.
-           Brittle, breaks across UI updates, and Live doesn't expose a
-           stable handle. Not recommended.
+        2. **Windows GUI helper** — use windows_live_ui_status followed by
+           windows_new_set(process_id). It verifies the foreground Live
+           process and leaves any Save Changes prompt for the user.
         3. **Set template** — save a baseline empty .als and use Live's
            "Default Set" preference so new sets start clean. One-time setup,
            then File → New Live Set behaves like our `new_set` would.
@@ -196,5 +198,6 @@ def register(mcp: FastMCP) -> None:
             "Application.create_new_set is not exposed in Live's Python LOM. "
             "Use File → New Live Set in the UI, or delete every track in "
             "the current set via track_delete to get a fresh canvas. "
+            "On Windows use windows_live_ui_status then windows_new_set(process_id). "
             "See the tool docstring for the full workaround list.",
         )

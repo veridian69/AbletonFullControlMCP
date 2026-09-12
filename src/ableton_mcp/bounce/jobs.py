@@ -178,6 +178,14 @@ def start_job(
             _prune_finished()
 
     job.task = asyncio.create_task(_run())
+    def _finalize_unstarted(task: asyncio.Task) -> None:
+        # Cancelling before the coroutine's first tick bypasses its try/finally.
+        if task.cancelled() and job.state == "running":
+            job.state = "cancelled"
+            job.message = "cancelled before capture started"
+            job.finished_at = time.time()
+            _prune_finished()
+    job.task.add_done_callback(_finalize_unstarted)
     _JOBS[job.job_id] = job
     return job
 

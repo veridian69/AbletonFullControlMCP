@@ -259,9 +259,12 @@ async def test_region_stems_deliver_progress_to_recording(tmp_path, monkeypatch)
     async def names():
         return ["Piano"]
 
-    async def input_name(index):
+    async def input_name(index, destination_index):
         assert index == 0
         return "Piano"
+
+    async def verify(captures):
+        assert captures == [(1, "Piano", "Post Mixer")]
 
     async def create(name):
         return 1
@@ -287,6 +290,7 @@ async def test_region_stems_deliver_progress_to_recording(tmp_path, monkeypatch)
 
     for key, fn in [("_track_names", names), ("_track_count", count),
                     ("_resolve_source_input_name", input_name), ("_create_audio_track", create),
+                    ("_verify_capture_setup", verify),
                     ("_set_input_routing", routing), ("_arm", arm),
                     ("_wait_for_clip_file_path", harvest), ("_record_arrangement_with_progress", record)]:
         monkeypatch.setattr(resampling, key, fn)
