@@ -356,7 +356,7 @@ def _system_ping(c_instance, **_):
 #           (returns None for absolute paths; see docs/PRACTICE_PACK_WAV_LOAD_DEBUG.md).
 #   1.6.0 — clip.delete_arrangement_clip: remove one arrangement clip
 #           (session-fired bounce punch cleanup).
-BRIDGE_VERSION = "1.7.0"
+BRIDGE_VERSION = "1.8.0"
 
 
 def _system_version(c_instance, _handler_table=None, **_):

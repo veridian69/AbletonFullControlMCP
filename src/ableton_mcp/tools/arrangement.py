@@ -134,6 +134,26 @@ def register(mcp: FastMCP) -> None:
         }
 
     @mcp.tool()
+    async def arrangement_copy_session_clip(
+        track_index: int, slot_index: int, position_beats: float,
+    ) -> dict[str, Any]:
+        """Copy a Session clip to Arrangement using native Live duplication.
+
+        Requires a non-overlapping destination; the source remains in Session.
+        Returns status=ok only after actual placement has been verified. Needs
+        the updated bridge; unavailable native methods return unsupported.
+        """
+        bridge = get_bridge_client()
+        try:
+            await bridge.require_handler("clip.duplicate_to_arrangement")
+            result = await bridge.call("clip.duplicate_to_arrangement",
+                track_index=int(track_index), slot_index=int(slot_index),
+                time=float(position_beats))
+            return {**result, "status": "ok" if result.get("verified") else "unsupported"}
+        except AbletonBridgeError as exc:
+            return {"status": "error", "verified": False, "error": str(exc)}
+
+    @mcp.tool()
     async def arrangement_insert_midi_clip(
         track_index: int,
         position_beats: float,

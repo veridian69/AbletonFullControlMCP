@@ -7,8 +7,8 @@ Verified LOM signatures in Live 11.3.43 (do NOT guess these — see
   ``Clip`` object (``slot.clip``), NOT the ``ClipSlot`` and NOT the integer
   slot index. Wrong shapes raise ``TypeError`` silently. Returns the new
   arrangement ``Clip``.
-- ``Track.create_midi_clip(start, end)`` — does NOT exist in Live 11.3. Do
-  not use it as a fallback.
+- ``Track.create_midi_clip(start, length)`` — unavailable in the observed
+  Live 11.3 build; available and verified in Live 12.4.6. Length is NOT end.
 - ``Track.arrangement_clips`` — property, iterable of ``Clip`` objects.
 - ``ClipSlot.duplicate_clip_to_arrangement`` — does NOT exist; only on Track.
 - ``Clip.consolidate()`` and ``Clip.crop()`` — exist.
@@ -20,12 +20,15 @@ Verified LOM signatures in Live 11.3.43 (do NOT guess these — see
 
 from __future__ import absolute_import
 
+import math
+
 
 EXPORTS = (
     "consolidate",
     "crop",
     "reverse",
     "duplicate_to_arrangement",
+    "import_midi_to_arrangement",
     "delete_arrangement_clip",
     "arrangement_clip_info",
     "get_arrangement_pitch_state",
@@ -492,57 +495,34 @@ def set_session_notes(c_instance, track_index=None, slot_index=0,
 
 def create_arrangement_midi_clip(c_instance, track_index=None,
                                   position=0.0, length=4.0, **_):
-    """Create an empty MIDI clip on the arrangement timeline.
+    """Create with Track.create_midi_clip(start, length); verified Live 12.4.6.
 
-    Live 11+ exposes ``Track.create_midi_clip(start, end)`` — both args
-    in beats. End-start gives the clip length. Returns the new clip's
-    arrangement index so the caller can address it for subsequent
-    ``set_arrangement_notes`` / ``move_arrangement_clip`` calls.
-
-    Constraints (enforced by Live):
-    - The track must be a MIDI track (raises on audio tracks).
-    - The position range must not overlap an existing clip on that track
-      (Live's LOM rejects overlap with a noisy error).
-    - position must be >= 0, length must be > 0.
+    Both arguments are beats. Older Live versions may lack this function.
+    Refuse overlapping ranges and verify actual boundaries before success.
     """
-    ti = int(track_index)
-    pos = float(position)
-    length_f = float(length)
-    if pos < 0:
-        raise ValueError("position must be >= 0 (got %r)" % pos)
-    if length_f <= 0:
-        raise ValueError("length must be > 0 (got %r)" % length_f)
-
+    ti, pos, span = int(track_index), float(position), float(length)
     track = _track(ti)
+    if not bool(getattr(track, "has_midi_input", False)):
+        raise ValueError("destination must be a MIDI track")
+    _check_arrangement_range(track, pos, span)
     create = getattr(track, "create_midi_clip", None)
-    if create is None:
-        raise RuntimeError(
-            "Track.create_midi_clip not available in this Live version "
-            "(needs Live 11+)"
-        )
-    # Live 11.3+ takes (start, end), not (start, length). Compute end.
-    pre_count = len(list(track.arrangement_clips))
-    new_clip = create(pos, pos + length_f)
-    # Find the new clip's index in arrangement_clips. Live may not return
-    # the clip object directly in all versions; iterate to find it.
-    post_clips = list(track.arrangement_clips)
-    new_index = len(post_clips) - 1  # newest is last by default
-    # Sanity: prefer the clip whose start_time matches `pos`.
-    for i, c in enumerate(post_clips):
-        if abs(float(getattr(c, "start_time", -1.0)) - pos) < 1e-6:
-            new_index = i
-            break
-    return {
-        "track_index": ti,
-        "clip_index": int(new_index),
-        "position": pos,
-        "length": length_f,
-        "end": pos + length_f,
-        "name": getattr(new_clip, "name", None) if new_clip is not None else None,
-        "pre_count": pre_count,
-        "post_count": len(post_clips),
-        "created": True,
-    }
+    if not callable(create):
+        raise RuntimeError("Track.create_midi_clip unavailable in this Live version")
+    before = list(track.arrangement_clips)
+    # LOM API: second argument is LENGTH, never absolute end.
+    create(pos, span)
+    after = list(track.arrangement_clips)
+    added = [(i, c) for i, c in enumerate(after) if c not in before]
+    if len(after) != len(before) + 1 or len(added) != 1:
+        raise RuntimeError("could not verify exactly one new arrangement MIDI clip; inspect Live")
+    ci, clip = added[0]
+    if (abs(float(clip.start_time) - pos) > 1e-6 or
+            abs(float(clip.end_time) - (pos + span)) > 1e-6):
+        raise RuntimeError("arrangement placement verification failed; inspect Live")
+    return {"track_index": ti, "clip_index": ci, "position": float(clip.start_time),
+            "length": float(clip.length), "end": float(clip.end_time),
+            "name": getattr(clip, "name", None), "pre_count": len(before),
+            "post_count": len(after), "created": True, "verified": True}
 
 
 def move_arrangement_clip(c_instance, track_index=None, clip_index=0,
@@ -1012,147 +992,126 @@ def _dir_track(c_instance, track_index=0, **_):
     }
 
 
+def _check_arrangement_range(track, time, length):
+    if not math.isfinite(time) or time < 0:
+        raise ValueError("time must be finite and >= 0")
+    if not math.isfinite(length) or length <= 0:
+        raise ValueError("length must be finite and > 0")
+    for clip in track.arrangement_clips:
+        start = float(clip.start_time)
+        end = float(clip.end_time)
+        if not math.isfinite(start) or not math.isfinite(end):
+            raise ValueError("cannot verify existing arrangement boundaries")
+        if time < end and time + length > start:
+            raise ValueError("destination overlaps an existing arrangement clip")
+
+
 def duplicate_to_arrangement(c_instance, track_index=None, slot_index=None, time=0.0, **_):
-    """Place a Session clip onto the Arrangement timeline at `time` (beats).
+    """Native Session -> Arrangement copy. Refuse overlap and verify placement.
 
-    Tries the native LOM duplicate method first if available, then falls back
-    to a manual re-creation that works for MIDI clips on any Live 11+ build:
-        track.create_midi_clip(start, end) + clip.set_notes(...).
-
-    Audio clips fall through to a not_supported result because Live's LOM has
-    no programmatic audio-clip-to-arrangement copy.
+    Use the verified Live 11.3 signature only; never probe mutating call shapes.
+    An unavailable native method returns supported=False without a mutation.
     """
-    track = _track(track_index)
+    ti, si, pos = int(track_index), int(slot_index), float(time)
+    track = _track(ti)
     slots = list(track.clip_slots)
-    slot_index = int(slot_index)
-    time = float(time)
-    if slot_index < 0 or slot_index >= len(slots):
-        raise ValueError("slot_index %d out of range" % slot_index)
-    slot = slots[slot_index]
-    if not slot.has_clip:
-        raise ValueError("no clip at track %d slot %d" % (int(track_index), slot_index))
-    src = slot.clip
-
-    # Tier 1: native LOM helpers, if any exist in this Live build.
-    # Live's API surface for "session clip → arrangement timeline" varies
-    # across versions. We try every plausible call shape and record per-
-    # attempt errors so debugging is straightforward.
-    src_clip = slot.clip
-    src_length = float(getattr(src_clip, "length", 0.0))
-    natives = []
-    if hasattr(slot, "duplicate_clip_to_arrangement"):
-        natives.append(("ClipSlot.duplicate_clip_to_arrangement(time)",
-                        lambda: slot.duplicate_clip_to_arrangement(time)))
-    if hasattr(track, "duplicate_clip_to_arrangement"):
-        natives.extend([
-            ("Track.duplicate_clip_to_arrangement(slot, time)",
-             lambda: track.duplicate_clip_to_arrangement(slot, time)),
-            ("Track.duplicate_clip_to_arrangement(clip, time)",
-             lambda: track.duplicate_clip_to_arrangement(src_clip, time)),
-            ("Track.duplicate_clip_to_arrangement(slot_index, time)",
-             lambda: track.duplicate_clip_to_arrangement(slot_index, time)),
-            ("Track.duplicate_clip_to_arrangement(slot)",
-             lambda: track.duplicate_clip_to_arrangement(slot)),
-            ("Track.duplicate_clip_to_arrangement(slot_index)",
-             lambda: track.duplicate_clip_to_arrangement(slot_index)),
-            ("Track.duplicate_clip_to_arrangement(slot, time, time+length)",
-             lambda: track.duplicate_clip_to_arrangement(slot, time, time + src_length)),
-        ])
-    attempt_errors = []
-    for name, fn in natives:
-        try:
-            result = fn()
-            return {
-                "track_index": int(track_index),
-                "slot_index": slot_index,
-                "time": time,
-                "method": name,
-                "lom_returned": repr(result) if result is not None else None,
-            }
-        except Exception as exc:
-            attempt_errors.append("%s -> %s: %s" % (name, type(exc).__name__, exc))
-            continue
-    last_err = " | ".join(attempt_errors) if attempt_errors else "no native methods exposed"
-
-    # Tier 2: manual MIDI clip copy.
-    if not getattr(src, "is_midi_clip", False):
-        raise RuntimeError(
-            "audio clip can't be programmatically copied to arrangement; "
-            "native attempts failed (%s). Drag manually from Session to Arrangement."
-            % last_err
-        )
-
+    if si < 0 or si >= len(slots) or not slots[si].has_clip:
+        raise ValueError("source Session slot is empty or out of range")
+    src = slots[si].clip
     length = float(src.length)
-    if length <= 0:
-        raise RuntimeError("source clip has zero length")
+    _check_arrangement_range(track, pos, length)
+    native = getattr(track, "duplicate_clip_to_arrangement", None)
+    if not callable(native):
+        return {"supported": False, "verified": False,
+                "reason": "Track.duplicate_clip_to_arrangement unavailable"}
+    before = list(track.arrangement_clips)
+    native(src, pos)
+    after = list(track.arrangement_clips)
+    added = [(i, c) for i, c in enumerate(after) if c not in before]
+    if len(after) != len(before) + 1 or len(added) != 1:
+        raise RuntimeError("could not verify exactly one new arrangement clip; inspect Live")
+    ci, dest = added[0]
+    if (abs(float(dest.start_time) - pos) > 1e-6 or
+            abs(float(dest.end_time) - (pos + length)) > 1e-6):
+        raise RuntimeError("arrangement placement verification failed; inspect Live")
+    return {"track_index": ti, "slot_index": si, "clip_index": ci,
+            "time": float(dest.start_time), "length": length,
+            "method": "Track.duplicate_clip_to_arrangement(clip, time)",
+            "verified": True, "supported": True}
 
-    # Read notes from source. Prefer the newer extended API.
-    notes_tuple = None
-    read_err = None
-    try:
-        ext_iter = src.get_notes_extended(0, 128, 0.0, length)
-        rows = []
-        for n in ext_iter:
-            rows.append(
-                (int(n.pitch), float(n.start_time), float(n.duration),
-                 int(n.velocity), bool(n.mute))
-            )
-        notes_tuple = tuple(rows)
-    except (AttributeError, TypeError) as exc:
-        read_err = exc
-    if notes_tuple is None:
-        try:
-            notes_data = src.get_notes(0.0, 0, length, 128)
-            notes_tuple = tuple(
-                (int(p), float(t), float(d), int(v), bool(m))
-                for (p, t, d, v, m) in notes_data
-            )
-        except Exception as exc:
-            raise RuntimeError("could not read source notes: %r (extended err: %r)"
-                               % (exc, read_err))
 
-    # Create the destination arrangement clip.
+def import_midi_to_arrangement(c_instance, track_index=None, time=0.0,
+                               length=4.0, notes=None, name=None, **_):
+    """Stage MIDI in a vacant Session slot, copy natively, verify notes, clean slot.
+
+    Live 11.3 lacks Track.create_midi_clip. All preflight and staging happens on
+    the Live main thread. Never clear an occupied slot or existing arrangement.
+    Failed copy/write verification is reported, with the new clip left inspectable.
+    """
+    ti, pos, span = int(track_index), float(time), float(length)
+    track = _track(ti)
+    if not bool(getattr(track, "has_midi_input", False)):
+        raise ValueError("destination must be a MIDI track")
+    _check_arrangement_range(track, pos, span)
+    notes = notes or []
+    if not notes:
+        raise ValueError("no MIDI notes to import")
+    for n in notes:
+        onset, duration = float(n["start"]), float(n["duration"])
+        if (not math.isfinite(onset) or not math.isfinite(duration) or onset < 0 or
+                duration <= 0 or onset + duration > span + 1e-6 or
+                not 0 <= int(n["pitch"]) <= 127 or not 1 <= int(n["velocity"]) <= 127):
+            raise ValueError("invalid MIDI note or note extends beyond clip")
+    def verify_notes(result):
+        actual = get_arrangement_notes(c_instance, track_index=ti,
+                                       clip_index=result["clip_index"])["notes"]
+        def key(n):
+            return (int(n["pitch"]), round(float(n["start"]), 5),
+                    round(float(n["duration"]), 5), int(n["velocity"]), bool(n.get("mute", False)))
+        if sorted(key(n) for n in actual) != sorted(key(n) for n in notes):
+            result.update({"status": "verification_failed", "verified": False,
+                           "notes_expected": len(notes), "notes_imported": len(actual),
+                           "reason": "Live note readback differs; inspect new clip before retrying"})
+            return result
+        result["track_name"] = getattr(track, "name", None)
+        result["notes_imported"] = len(actual)
+        return result
+
     create = getattr(track, "create_midi_clip", None)
-    if create is None:
-        raise RuntimeError("Track.create_midi_clip not available in this Live version")
-    new_clip = create(time, time + length)
-
-    # Write notes. Try the modern API first.
-    write_err = None
-    written = False
-    if hasattr(new_clip, "add_new_notes"):
-        try:
-            # Live 11+: add_new_notes takes a tuple of MidiNoteSpec-shaped tuples.
-            new_clip.add_new_notes(notes_tuple)
-            written = True
-        except Exception as exc:
-            write_err = "add_new_notes: %r" % (exc,)
-    if not written and hasattr(new_clip, "set_notes"):
-        try:
-            new_clip.set_notes(notes_tuple)
-            written = True
-        except Exception as exc:
-            write_err = (write_err or "") + " | set_notes: %r" % (exc,)
-    if not written:
-        raise RuntimeError("could not write notes to new arrangement clip: %s" % write_err)
-
+    if callable(create):
+        created = create_arrangement_midi_clip(c_instance, track_index=ti,
+                                               position=pos, length=span)
+        ci = created["clip_index"]
+        clip = _arrangement_clip(ti, ci)
+        set_arrangement_notes(c_instance, track_index=ti, clip_index=ci, notes=notes)
+        if name is not None:
+            clip.name = str(name)
+        return verify_notes({"track_index": ti, "clip_index": ci,
+                             "time": created["position"], "length": created["length"],
+                             "verified": True,
+                             "method": "Track.create_midi_clip(start, length)"})
+    if not callable(getattr(track, "duplicate_clip_to_arrangement", None)):
+        return {"supported": False, "verified": False, "reason": "native MIDI creation/copy unavailable"}
+    empty = [(i, slot) for i, slot in enumerate(track.clip_slots) if not slot.has_clip]
+    if not empty:
+        raise ValueError("destination track needs an empty Session slot for staging")
+    si, slot = empty[0]
+    staged = None
     try:
-        new_clip.name = (src.name or "") + " (arr)"
-    except Exception:
-        pass
-    try:
-        new_clip.color = src.color
-    except Exception:
-        pass
-
-    return {
-        "track_index": int(track_index),
-        "slot_index": slot_index,
-        "time": time,
-        "length": length,
-        "notes_copied": len(notes_tuple),
-        "method": "manual_midi_copy",
-    }
+        slot.create_clip(span)
+        staged = slot.clip
+        if staged is None:
+            raise RuntimeError("Session staging did not create a clip")
+        set_session_notes(c_instance, track_index=ti, slot_index=si, notes=notes)
+        if name is not None:
+            staged.name = str(name)
+        result = duplicate_to_arrangement(c_instance, track_index=ti, slot_index=si, time=pos)
+        if not result.get("verified"):
+            return result
+        return verify_notes(result)
+    finally:
+        if staged is not None and slot.clip == staged:
+            slot.delete_clip()
 
 
 # ---------------------------------------------------------------------------

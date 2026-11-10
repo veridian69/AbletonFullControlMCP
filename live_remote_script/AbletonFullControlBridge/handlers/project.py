@@ -85,7 +85,7 @@ def _document_file_path():
 
 def get_file_path(c_instance, **_):
     """Return the .als file path for the open project, or None if unsaved."""
-    return {"file_path": _document_file_path()}
+    return {"file_path": _document_file_path(), "process_id": os.getpid()}
 
 
 def list_freezing_dir(c_instance, **_):
