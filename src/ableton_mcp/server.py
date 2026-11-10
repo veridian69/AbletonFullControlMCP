@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from .config import Config
 from .tools import (
     arrangement,
+    automation,
     audio_analysis,
     bench,
     bounce,
@@ -49,6 +50,7 @@ from .tools import (
     tracks,
     transport,
     view,
+    windows_file_ops,
 )
 
 log = logging.getLogger("ableton_mcp")
@@ -85,6 +87,8 @@ def build_server() -> FastMCP:
     cue_points.register(mcp)
     view.register(mcp)
     arrangement.register(mcp)
+    automation.register(mcp)
+    windows_file_ops.register(mcp)
     routing.register(mcp)
     devices.register(mcp)
     midi_mapping.register(mcp)

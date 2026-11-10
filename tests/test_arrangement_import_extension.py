@@ -27,6 +27,9 @@ class Clip:
         return self.notes
     def set_notes(self, notes):
         self.notes = tuple(notes)
+    def remove_notes(self, *args):
+        # set_arrangement_notes refuses to replace notes without a removal API.
+        self.notes = ()
 
 
 class Track:

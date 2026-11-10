@@ -247,7 +247,7 @@ async def test_bounce_song_background_cancel_via_tool(
     await _wait_for_state(again["job_id"], "done")
 
 
-async def test_bounce_song_foreground_unchanged(
+async def test_bounce_song_foreground_returns_result_and_releases_reservation(
     mcp: FastMCP, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     engine = GatedEngine()
@@ -259,7 +259,9 @@ async def test_bounce_song_foreground_unchanged(
     )
     assert out["status"] == "ok"
     assert out["wav"]["copied"] is True
-    assert jobs.list_jobs() == []  # no job created for foreground calls
+    assert jobs.active_exclusive_job() is None
+    assert jobs.list_jobs()[0]["state"] == "done"
+    assert jobs.list_jobs()[0]["exclusive"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +400,19 @@ async def test_variations_background_returns_job_id(
     snap = await _wait_for_state(out["job_id"], "done")
     assert snap["exclusive"] is False
     assert snap["result"]["n_variations"] == 12
+
+
+async def test_foreground_cancel_before_runner_starts_releases_reservation():
+    entered = False
+    async def runner(progress):
+        nonlocal entered
+        entered = True
+        return {"status": "ok"}
+    task = asyncio.create_task(bounce_tools._run_foreground("early-cancel", runner))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not entered
+    assert jobs.active_exclusive_job() is None
+    assert jobs.list_jobs()[0]["state"] == "cancelled"

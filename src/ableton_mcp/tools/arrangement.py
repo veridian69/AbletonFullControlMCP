@@ -12,6 +12,7 @@ Includes:
 from __future__ import annotations
 
 from typing import Any
+import math
 
 from mcp.server.fastmcp import FastMCP
 
@@ -171,9 +172,9 @@ def register(mcp: FastMCP) -> None:
         existing arrangement clip on that track. We surface Live's error
         as ``status="error"`` rather than raising.
 
-        Returns the new clip's ``clip_index`` so the caller can follow
-        up with ``clip_*`` setters (e.g. notes, color, name) via the
-        existing arrangement-clip tool surface.
+        Returns the new clip's ``clip_index``. Populate it using
+        ``arrangement_set_notes`` and inspect it with ``arrangement_get_notes``.
+        Generic ``clip_*`` OSC tools address Session slots, not Arrangement clips.
 
         Requires bridge version 1.4.0+; older bridges raise
         :class:`AbletonBridgeOutdated` with the install hint via the
@@ -231,3 +232,70 @@ def register(mcp: FastMCP) -> None:
         if not result.get("moved"):
             return {"status": "error", **result}
         return {"status": "ok", **result}
+
+
+    @mcp.tool()
+    async def arrangement_get_notes(track_index: int, clip_index: int) -> dict[str, Any]:
+        """Read MIDI notes from an Arrangement clip, never a Session slot.
+
+        Notes use pitch, start (clip-local beats), duration, velocity and mute.
+        """
+        bridge = get_bridge_client()
+        try:
+            if track_index < 0 or clip_index < 0:
+                raise ValueError("indices must be non-negative")
+            await bridge.require_handler("clip.get_arrangement_notes")
+            return {"status": "ok", **await bridge.call("clip.get_arrangement_notes",
+                    track_index=track_index, clip_index=clip_index)}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+
+    @mcp.tool()
+    async def arrangement_set_notes(track_index: int, clip_index: int,
+                                    notes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Replace an Arrangement MIDI clip's notes and verify by reading them back.
+
+        Each note has pitch (0..127), start (non-negative clip-local beats),
+        duration (>0), velocity (1..127), optional mute (boolean). Empty notes
+        clears the clip. All prior notes are replaced. This is not clip_add_notes,
+        which addresses Session slots. Verification failure may leave changes;
+        no rollback or save is performed. Extended note-expression fields are
+        not preserved by this five-field replacement operation.
+        """
+        bridge = get_bridge_client()
+        try:
+            if track_index < 0 or clip_index < 0:
+                raise ValueError("indices must be non-negative")
+            rows = []
+            for note in notes:
+                pitch, velocity = note['pitch'], note['velocity']
+                start, duration = float(note['start']), float(note['duration'])
+                mute = note.get('mute', False)
+                if (isinstance(pitch, bool) or isinstance(velocity, bool)
+                    or int(pitch) != pitch or int(velocity) != velocity
+                    or not 0 <= pitch <= 127 or not 1 <= velocity <= 127
+                    or not math.isfinite(start) or not math.isfinite(duration)
+                    or not 0 <= start < 1576800.0 or duration <= 0
+                    or not math.isfinite(start + duration) or not isinstance(mute, bool)):
+                    raise ValueError("invalid MIDI note")
+                rows.append(dict(pitch=int(pitch), start=start, duration=duration,
+                                 velocity=int(velocity), mute=mute))
+            await bridge.require_handler("clip.set_arrangement_notes")
+            await bridge.require_handler("clip.get_arrangement_notes")
+        except Exception as exc:
+            return {"status": "error", "error": str(exc), "stage": "validation"}
+        try:
+            result = await bridge.call("clip.set_arrangement_notes", track_index=track_index,
+                                       clip_index=clip_index, notes=rows)
+            actual = await bridge.call("clip.get_arrangement_notes", track_index=track_index,
+                                       clip_index=clip_index)
+            def key(n: dict[str, Any]) -> tuple:
+                return (int(n['pitch']), round(float(n['start']), 6),
+                        round(float(n['duration']), 6), int(n['velocity']), bool(n.get('mute', False)))
+            verified = sorted(map(key, rows)) == sorted(map(key, actual['notes']))
+            return {**result, "status": "ok" if verified else "error", "verified": verified,
+                    "stage": "readback", "notes_read": len(actual['notes']),
+                    **({} if verified else {"error": "Arrangement note readback differs from requested notes"})}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc), "verified": False,
+                    "mutation_possible": True}

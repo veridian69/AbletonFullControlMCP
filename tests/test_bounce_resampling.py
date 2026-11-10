@@ -83,6 +83,10 @@ class FakeOSC:
             return (self.track_count,)
         if addr == "/live/song/get/track_names":
             return tuple(self.track_names)
+        if addr == "/live/track/get/available_input_routing_types":
+            return (args[0], "Ext. In", "Resampling", *self.track_names)
+        if addr == "/live/track/get/input_routing_channel":
+            return (args[0], "Post Mixer")
         if addr == "/live/track/get/input_routing_type":
             ti = int(args[0])
             actual = self.input_routing.get(ti, "No Input")
@@ -541,20 +545,16 @@ async def test_bounce_song_records_arm_and_routing_confirmation_state(
 
 
 @pytest.mark.asyncio
-async def test_bounce_song_diagnostics_flag_unconfirmed_routing(
+async def test_bounce_song_rejects_unconfirmed_routing_before_recording(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
 ) -> None:
-    """When read-back didn't confirm routing AND no clip materialized,
-    the diagnostics should specifically mention the routing issue."""
     osc = FakeOSC(track_names=["t0"], routing_confirms=False)
     bridge = FakeBridge(file_path=None)
     _patch(monkeypatch, osc, bridge)
-    out = await resampling.bounce_song_via_resampling(
-        tmp_path / "out.wav",
-        duration_sec=0.05,
-        settle_sec=0.02,
-        clip_finalize_timeout_sec=0.1,
-    )
-    assert out["routing_confirmed"] is False
-    assert out["diagnostics"] is not None
-    assert any("routing" in d.lower() for d in out["diagnostics"])
+    with pytest.raises(resampling.BounceError, match="routing expected"):
+        await resampling.bounce_song_via_resampling(
+            tmp_path / "out.wav", duration_sec=0.05,
+            settle_sec=0.02, clip_finalize_timeout_sec=0.1,
+        )
+    assert not any(addr == "/live/song/start_playing" for addr, _ in osc.sent)
+    assert osc.track_names == ["t0"]

@@ -193,9 +193,9 @@ def register(mcp: FastMCP) -> None:
         Workarounds:
 
         1. **Manual** — File → New Live Set (Ctrl/Cmd-N).
-        2. **AppleScript / pywinauto** — drive the menu from outside Live.
-           Brittle, breaks across UI updates, and Live doesn't expose a
-           stable handle. Not recommended.
+        2. **Windows GUI helper** — use windows_live_ui_status followed by
+           windows_new_set(process_id). It verifies the foreground Live
+           process and leaves any Save Changes prompt for the user.
         3. **Set template** — save a baseline empty .als and use Live's
            "Default Set" preference so new sets start clean. One-time setup,
            then File → New Live Set behaves like our `new_set` would.
@@ -210,5 +210,6 @@ def register(mcp: FastMCP) -> None:
             "Application.create_new_set is not exposed in Live's Python LOM. "
             "Use File → New Live Set in the UI, or delete every track in "
             "the current set via track_delete to get a fresh canvas. "
+            "On Windows use windows_live_ui_status then windows_new_set(process_id). "
             "See the tool docstring for the full workaround list.",
         )

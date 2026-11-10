@@ -103,6 +103,10 @@ class FakeOSC:
             return (len(self.track_names),)
         if addr == "/live/song/get/track_names":
             return tuple(self.track_names)
+        if addr == "/live/track/get/available_input_routing_types":
+            return (args[0], "Ext. In", "Resampling", *self.track_names)
+        if addr == "/live/track/get/input_routing_channel":
+            return (args[0], "Post Mixer")
         if addr == "/live/track/get/input_routing_type":
             ti = int(args[0])
             return (ti, self.input_routing.get(ti, "No Input"))

@@ -181,7 +181,7 @@ def get_arrangement_notes(c_instance, track_index=None, clip_index=0, **_):
     rows = []
     read_err = None
     try:
-        for n in clip.get_notes_extended(0, 128, 0.0, length):
+        for n in clip.get_notes_extended(0, 128, 0.0, 1576800.0):
             rows.append({
                 "pitch": int(n.pitch),
                 "start": float(n.start_time),
@@ -194,7 +194,7 @@ def get_arrangement_notes(c_instance, track_index=None, clip_index=0, **_):
     except (AttributeError, TypeError) as exc:
         read_err = exc
     try:
-        for (p, t, d, v, m) in clip.get_notes(0.0, 0, length, 128):
+        for (p, t, d, v, m) in clip.get_notes(0.0, 0, 1576800.0, 128):
             rows.append({
                 "pitch": int(p), "start": float(t), "duration": float(d),
                 "velocity": int(v), "mute": bool(m),
@@ -228,17 +228,25 @@ def set_arrangement_notes(c_instance, track_index=None, clip_index=0,
         for n in notes
     )
 
-    # Wipe existing notes. `remove_notes_extended` covers all pitches/time.
+    import math
+    for note, row in zip(notes, rows):
+        p, start, duration, velocity, mute = row
+        if (isinstance(note['pitch'], bool) or isinstance(note['velocity'], bool)
+            or note['pitch'] != p or note['velocity'] != velocity
+            or not 0 <= p <= 127 or not 1 <= velocity <= 127
+            or not math.isfinite(start) or not math.isfinite(duration)
+            or not 0 <= start < 1576800.0 or duration <= 0
+            or not math.isfinite(start + duration)
+            or not isinstance(note.get('mute', False), bool)):
+            raise ValueError("invalid MIDI note; nothing removed")
+
+    # A failed removal must stop replacement, never silently append notes.
     if hasattr(clip, "remove_notes_extended"):
-        try:
-            clip.remove_notes_extended(0, 128, 0.0, max(length, 0.0))
-        except Exception:
-            pass
+        clip.remove_notes_extended(0, 128, 0.0, 1576800.0)
     elif hasattr(clip, "remove_notes"):
-        try:
-            clip.remove_notes(0.0, 0, max(length, 0.0), 128)
-        except Exception:
-            pass
+        clip.remove_notes(0.0, 0, 1576800.0, 128)
+    else:
+        raise RuntimeError("could not replace notes: no note removal API")
 
     write_err = None
     written = False
