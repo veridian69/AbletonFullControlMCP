@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,8 @@ import pretty_midi
 from mcp.server.fastmcp import FastMCP
 
 from ..osc_client import get_client
+from ..bridge_client import AbletonBridgeError, get_bridge_client
+from ..arrangement_import import midi_notes_at_tempo
 
 
 def _midi_to_clip_notes(pm: pretty_midi.PrettyMIDI, instrument_index: int = 0) -> list[dict[str, Any]]:
@@ -16,17 +19,23 @@ def _midi_to_clip_notes(pm: pretty_midi.PrettyMIDI, instrument_index: int = 0) -
     if instrument_index >= len(pm.instruments):
         return []
     inst = pm.instruments[instrument_index]
-    # Convert seconds to beats using the file's tempo map.
-    tempos_change_times, tempos = pm.get_tempo_changes()
-    bpm = float(tempos[0]) if len(tempos) else 120.0
-    beats_per_sec = bpm / 60.0
+    # Integrate the complete tempo map; a note may span a tempo change.
+    times, tempos = pm.get_tempo_changes()
+    def beat_at(seconds: float) -> float:
+        beats = 0.0
+        for i, start in enumerate(times):
+            if seconds <= start:
+                break
+            end = times[i + 1] if i + 1 < len(times) else seconds
+            beats += (min(seconds, end) - start) * float(tempos[i]) / 60.0
+        return beats
     out: list[dict[str, Any]] = []
     for n in inst.notes:
         out.append(
             {
                 "pitch": int(n.pitch),
-                "start": float(n.start * beats_per_sec),
-                "duration": float((n.end - n.start) * beats_per_sec),
+                "start": float(beat_at(n.start)),
+                "duration": float(beat_at(n.end) - beat_at(n.start)),
                 "velocity": int(n.velocity),
                 "mute": False,
             }
@@ -125,6 +134,48 @@ def register(mcp: FastMCP) -> None:
             "notes_added": len(notes),
             "clip_length_beats": length_beats,
         }
+
+    @mcp.tool()
+    async def midi_file_load_into_arrangement(
+        path: str, track_index: int, position_beats: float,
+        destination_bpm: float, instrument_index: int = 0,
+        tempo_policy: str = "preserve_seconds",
+    ) -> dict[str, Any]:
+        """Import one MIDI instrument onto the Arrangement with verified notes.
+
+        Explicit timing policy: preserve elapsed seconds from the MIDI tempo
+        map at the supplied constant destination BPM. Global Live tempo is
+        never changed. Destination tempo automation must be absent; this tool
+        verifies notes/placement, not future playback under automation.
+        Current Live BPM must match destination_bpm. Occupied ranges refuse.
+        Uses native Arrangement creation where available; older Live builds
+        stage temporarily in a vacant Session slot (never clear an occupied slot).
+        """
+        try:
+            if tempo_policy != "preserve_seconds":
+                raise ValueError("only tempo_policy=preserve_seconds is supported")
+            if not math.isfinite(position_beats) or position_beats < 0 or track_index < 0:
+                raise ValueError("track/position must be non-negative and position finite")
+            pm = pretty_midi.PrettyMIDI(str(Path(path)))
+            notes = midi_notes_at_tempo(pm, instrument_index, destination_bpm)
+            if not notes:
+                raise ValueError("selected instrument contains no notes")
+            client = await get_client()
+            live_bpm = float((await client.request("/live/song/get/tempo"))[0])
+            if abs(live_bpm - destination_bpm) > 1e-6:
+                raise ValueError("current Live tempo does not match destination_bpm; tempo unchanged")
+            span = max(0.25, max(n["start"] + n["duration"] for n in notes))
+            bridge = get_bridge_client()
+            await bridge.require_handler("clip.import_midi_to_arrangement")
+            result = await bridge.call("clip.import_midi_to_arrangement",
+                track_index=int(track_index), time=float(position_beats),
+                length=float(span), notes=notes, name=Path(path).stem)
+            return {**result, "status": "ok" if result.get("verified") else result.get("status", "unsupported"),
+                    "source_path": str(Path(path).resolve()), "destination_bpm": destination_bpm,
+                    "tempo_policy": tempo_policy, "tempo_changed": False,
+                    "tempo_assumption": "constant destination tempo; no tempo automation"}
+        except (ValueError, OSError, AbletonBridgeError) as exc:
+            return {"status": "error", "verified": False, "error": str(exc)}
 
     @mcp.tool()
     async def midi_file_export_from_clip(

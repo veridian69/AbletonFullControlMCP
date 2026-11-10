@@ -19,7 +19,7 @@ If you discover a fact that isn't here, add it. Future-you will thank you.
 | `Track.arrangement_clips` | **yes** | Property, iterable of `Clip` objects on the arrangement timeline. Length = `len(list(track.arrangement_clips))`. |
 | `Track.clip_slots` | **yes** | Property, iterable of `ClipSlot` objects (Session view rows). |
 | `Track.create_audio_clip(name, position)` | **yes** | Audio tracks only. Used for placing audio onto the arrangement. |
-| `Track.create_midi_clip(start, end)` | **DOES NOT EXIST** | Live 11.3 does not expose this. Don't use it as a fallback for arrangement-clip creation. Discovered the hard way. |
+| `Track.create_midi_clip(start, length)` | **Version-dependent** | Unavailable in the observed Live 11.3 build. Verified in Live **12.4.6 on 5 October 2026**: second argument is duration in beats, NOT an absolute end. Example: `(16, 4)` places a four-beat clip at beat 16. Passing `(16, 20)` creates a twenty-beat clip. See [official Track LOM](https://docs.cycling74.com/apiref/lom/track/). |
 | `Track.delete_clip(clip)` | yes | |
 | `Track.duplicate_clip_slot(slot_index)` | yes | Session-to-session duplication. |
 | `Track.duplicate_clip_to_arrangement(clip, time)` | **yes — and signature matters** | The first arg is the `Clip` object (`slot.clip`), NOT the `ClipSlot`, NOT the integer slot index. The `time` is a beat position. Returns the new arrangement `Clip`. Other shapes raise `TypeError` silently. |

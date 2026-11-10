@@ -47,6 +47,10 @@ class FakeOSC:
         if addr == "/live/track/get/has_audio_output":
             ti = int(args[0])
             return (ti, 0 if ti in self.non_audio else 1)
+        if addr == "/live/track/get/available_input_routing_types":
+            return (args[0], "Ext. In", "Resampling", *self.track_names)
+        if addr == "/live/track/get/input_routing_channel":
+            return (args[0], "Post Mixer")
         if addr == "/live/track/get/input_routing_type":
             ti = int(args[0])
             return (ti, self.input_routing.get(ti, "No Input"))

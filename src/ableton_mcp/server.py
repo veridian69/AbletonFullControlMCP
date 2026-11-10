@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from .config import Config
 from .tools import (
     arrangement,
+    automation,
     audio_analysis,
     bench,
     bounce,
@@ -20,6 +21,11 @@ from .tools import (
     cue_points,
     device_schemas,
     devices,
+    film_cues,
+    film_cue_set,
+    film_delivery,
+    film_tempo,
+    film_calibration,
     high_level,
     inventory,
     knowledge,
@@ -44,6 +50,7 @@ from .tools import (
     tracks,
     transport,
     view,
+    windows_file_ops,
 )
 
 log = logging.getLogger("ableton_mcp")
@@ -80,6 +87,8 @@ def build_server() -> FastMCP:
     cue_points.register(mcp)
     view.register(mcp)
     arrangement.register(mcp)
+    automation.register(mcp)
+    windows_file_ops.register(mcp)
     routing.register(mcp)
     devices.register(mcp)
     midi_mapping.register(mcp)
@@ -123,6 +132,11 @@ def build_server() -> FastMCP:
     # Lyric-aligned section detection — chart-vs-transcript correlation,
     # sections.json sidecar, arrangement locators.
     sections.register(mcp)
+    film_cues.register(mcp)
+    film_cue_set.register(mcp)
+    film_delivery.register(mcp)
+    film_tempo.register(mcp)
+    film_calibration.register(mcp)
 
     return mcp
 

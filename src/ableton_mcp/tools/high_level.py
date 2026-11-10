@@ -14,6 +14,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..local_automation.save_set import save_set_as, save_existing_set
 from ..bridge_client import AbletonBridgeError, AbletonBridgeUnavailable, get_bridge_client
 
 
@@ -112,18 +113,31 @@ def register(mcp: FastMCP) -> None:
         """
         return await _call("clip.reverse", track_index=int(track_index), clip_index=int(clip_index))
 
+    async def active_set() -> dict[str, Any]:
+        return await get_bridge_client().call("project.get_file_path")
+
+    @mcp.tool()
+    async def op_save_set_as(path: str) -> dict[str, Any]:
+        """Save the active Live Set to a NEW absolute .als path (Windows UI).
+
+        Refuses overwrite. Requires an identifiable standard Windows Save As
+        dialog and updated local bridge. Success requires a valid new ALS on
+        disk and matching active Live Set path. Cancellation/unsupported UI or
+        missing path verification are structured failures, never guessed success.
+        """
+        return await save_set_as(path, active_set)
+
     @mcp.tool()
     async def op_save_set(path: str | None = None) -> dict[str, Any]:
-        """Save the current Live Set (Cmd-S).
+        """Verified Windows Ctrl+S, or Save As when a new path is supplied.
 
-        `path` is accepted for forward compatibility but Live's API does NOT
-        support Save-As without the UI dialog, so it's currently ignored with
-        a `save_as_supported: False` flag in the response.
+        Path is honoured, never silently ignored. Existing Save requires an
+        observed valid ALS rewrite and matching active path. Unsaved Sets return
+        needs_save_as without keyboard input. Unknown dialogs are refused.
         """
-        result = await _call("project.save")
         if path is not None:
-            result["save_as_path_ignored"] = path
-        return result
+            return await save_set_as(path, active_set)
+        return await save_existing_set(active_set)
 
     # ---- Genuinely-not-supported ops ----
     # These remain stubs because Live's Python LOM has no hook for them.
@@ -179,9 +193,9 @@ def register(mcp: FastMCP) -> None:
         Workarounds:
 
         1. **Manual** — File → New Live Set (Ctrl/Cmd-N).
-        2. **AppleScript / pywinauto** — drive the menu from outside Live.
-           Brittle, breaks across UI updates, and Live doesn't expose a
-           stable handle. Not recommended.
+        2. **Windows GUI helper** — use windows_live_ui_status followed by
+           windows_new_set(process_id). It verifies the foreground Live
+           process and leaves any Save Changes prompt for the user.
         3. **Set template** — save a baseline empty .als and use Live's
            "Default Set" preference so new sets start clean. One-time setup,
            then File → New Live Set behaves like our `new_set` would.
@@ -196,5 +210,6 @@ def register(mcp: FastMCP) -> None:
             "Application.create_new_set is not exposed in Live's Python LOM. "
             "Use File → New Live Set in the UI, or delete every track in "
             "the current set via track_delete to get a fresh canvas. "
+            "On Windows use windows_live_ui_status then windows_new_set(process_id). "
             "See the tool docstring for the full workaround list.",
         )

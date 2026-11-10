@@ -28,6 +28,7 @@ import sys
 import traceback
 
 from .handlers import browser as browser_handlers
+from .handlers import automation as automation_handlers
 from .handlers import clips as clip_handlers
 from .handlers import project as project_handlers
 from .handlers import tracks as track_handlers
@@ -284,6 +285,7 @@ class BridgeServer(object):
             (track_handlers, "track."),
             (clip_handlers, "clip."),
             (project_handlers, "project."),
+            (automation_handlers, "automation."),
         ):
             for name in getattr(mod, "EXPORTS"):
                 table[prefix + name] = getattr(mod, name)
@@ -311,7 +313,8 @@ class BridgeServer(object):
             return {"ok": False, "error": "importlib unavailable: %r" % (exc,)}
         reloaded = []
         errors = {}
-        for mod in (browser_handlers, track_handlers, clip_handlers, project_handlers):
+        for mod in (browser_handlers, track_handlers, clip_handlers, project_handlers,
+                    automation_handlers):
             try:
                 importlib.reload(mod)
                 reloaded.append(mod.__name__)
@@ -356,7 +359,11 @@ def _system_ping(c_instance, **_):
 #           (returns None for absolute paths; see docs/PRACTICE_PACK_WAV_LOAD_DEBUG.md).
 #   1.6.0 — clip.delete_arrangement_clip: remove one arrangement clip
 #           (session-fired bounce punch cleanup).
-BRIDGE_VERSION = "1.6.0"
+#   1.8.0 — capability-checked clip envelope automation and verified Arrangement notes.
+#           Also 1.8.0 (5 Oct, separate line of work): Arrangement MIDI import,
+#           Session-clip copy to Arrangement, and active Set path for verified saves.
+#   1.9.0 — merges the two independent 1.8.0 lines above into one bridge.
+BRIDGE_VERSION = "1.9.0"
 
 
 def _system_version(c_instance, _handler_table=None, **_):

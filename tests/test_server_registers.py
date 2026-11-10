@@ -37,6 +37,10 @@ async def test_server_builds_and_registers_tools() -> None:
         "view_get_selection", "view_select_track", "view_select_clip", "view_select_device",
         # Arrangement
         "arrangement_clips_list", "arrangement_summary",
+        "arrangement_get_notes", "arrangement_set_notes",
+        "automation_capabilities", "automation_write_curve", "automation_read_values",
+        "windows_live_ui_status", "windows_save_set_as",
+        "windows_new_set", "windows_open_native_export",
         # Routing
         "routing_available_inputs", "routing_get", "routing_set_output",
         # Devices
@@ -63,6 +67,11 @@ async def test_server_builds_and_registers_tools() -> None:
         "bounce_job_status", "bounce_job_cancel", "bounce_job_list",
         # Session-clip transpose (arrangement-safe path)
         "song_transpose_session",
+        # Film cue interchange (offline planning and preview-first locator import).
+        "film_cues_plan", "film_cues_import",
+        "film_cues_export_set", "film_stems_prepare", "film_stems_audit",
+        "film_tempo_read", "generate_calibration_probe", "measure_capture_calibration",
+        "validate_capture_calibration",
     }
     missing = expected - names
     assert not missing, f"missing tools: {sorted(missing)}"
